@@ -1,0 +1,5 @@
+{
+  "name": "relay-skills",
+  "version": "0.1.0",
+  "description": "릴레이형 작업용 스킬 2개: /handoff(증거 기반 인계 요약), /confirm-first(큰 작업 전 해석 재확인)."
+}

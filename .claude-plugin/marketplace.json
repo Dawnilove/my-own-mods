@@ -1,0 +1,42 @@
+{
+  "name": "my-own-mods",
+  "owner": { "name": "Dawnilove", "url": "https://github.com/Dawnilove" },
+  "metadata": { "description": "릴레이형 작업(설계, 구현, 리뷰, 인계)을 위한 Claude Code 모드, 스킬, 에이전트." },
+  "plugins": [
+    {
+      "name": "edit-guard",
+      "source": "./plugins/edit-guard",
+      "description": "Mod: 파일을 깨뜨리는 sed/heredoc 치환 명령은 막고, 위험한 삭제·git 명령은 영향 범위를 보여주고 진행/취소를 묻습니다.",
+      "version": "0.1.0",
+      "category": "mod"
+    },
+    {
+      "name": "relay-band",
+      "source": "./plugins/relay-band",
+      "description": "Mod: 입력창 위 한 줄 띠. 검증 결과, 자식 에이전트 수, 컨텍스트, 주간 한도와 오늘 권장량, 캐시 등을 보여줍니다.",
+      "version": "0.1.0",
+      "category": "mod"
+    },
+    {
+      "name": "agent-panel",
+      "source": "./plugins/agent-panel",
+      "description": "Mod: 실행 중인 하위 에이전트를 옆 패널에 보여줍니다.",
+      "version": "0.1.0",
+      "category": "mod"
+    },
+    {
+      "name": "relay-skills",
+      "source": "./plugins/relay-skills",
+      "description": "Skills: /handoff(증거 기반 인계 요약), /confirm-first(큰 작업 전 해석 재확인).",
+      "version": "0.1.0",
+      "category": "skill"
+    },
+    {
+      "name": "relay-agents",
+      "source": "./plugins/relay-agents",
+      "description": "Agents: relay-design(Fable high), relay-build(Opus medium), relay-review(Opus high).",
+      "version": "0.1.0",
+      "category": "agent"
+    }
+  ]
+}

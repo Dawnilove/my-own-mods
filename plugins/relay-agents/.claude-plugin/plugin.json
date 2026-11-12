@@ -1,0 +1,5 @@
+{
+  "name": "relay-agents",
+  "version": "0.1.0",
+  "description": "릴레이형 작업용 에이전트 3개: relay-design(설계, Fable high), relay-build(구현, Opus medium), relay-review(리뷰, Opus high). 모델과 노력 수준이 파일에 고정되어 상한선이 됩니다."
+}
