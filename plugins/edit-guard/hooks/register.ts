@@ -14,9 +14,12 @@ const HOLD_LIMIT_MS = 10 * 60 * 1000
 const LIST_MAX = 10
 const POLL_MS = 250
 
-type Report = { summary: string; lines: string[]; more?: number; note?: string }
+// unknown: 영향 범위를 알 수 없는 경우. "없음"으로 단정하지 않고 모름 패널로 그린다.
+// recover: 되돌릴 수 있는지 한 줄. 알 수 없으면 비운다.
+type Report = { summary: string; lines: string[]; more?: number; note?: string; unknown?: boolean; recover?: string }
 type Risk = { kind: string; label: string; targets?: string[]; args?: string[]; dir?: string }
-type Held = { command: string; risk: Risk; report: Report | null; decision: string | null; where: 'pane' | 'band' }
+// cwd: 영향을 잰 폴더. showCommand: 명령 펼침. leftMs: 기다릴 수 있는 남은 시간.
+type Held = { command: string; risk: Risk; report: Report | null; decision: string | null; where: 'pane' | 'band'; cwd: string; showCommand: boolean; leftMs: number }
 
 // 붙잡고 있는 호출. 한 번에 하나만.
 let held: Held | null = null
@@ -68,16 +71,20 @@ async function guard($: any, e: any, next: any, tool: 'Bash' | 'PowerShell') {
     return { deny: 'edit-guard: 이 명령을 붙잡았지만 턴이 중단되어 실행하지 않았습니다. 사용자가 요청하기 전에는 다시 시도하지 마세요.' }
   }
 
-  const mine: Held = { command, risk, report: null, decision: null, where: 'pane' }
+  const mine: Held = { command, risk, report: null, decision: null, where: 'pane', cwd: '', showCommand: false, leftMs: HOLD_LIMIT_MS }
   held = mine
   let isPlaced = false
   let summary = risk.label
+  let unknown = false
 
   try {
     const sessionCwd: string = await $.session.cwd()
     const cwd = risk.dir ? resolvePath(sessionCwd, risk.dir) : sessionCwd
     mine.report = await measure($, risk, cwd)
     summary = mine.report.summary
+    unknown = mine.report.unknown === true
+    mine.cwd = cwd
+    mine.showCommand = unknown // 영향을 모를 때는 명령을 처음부터 펼쳐 보인다
 
     const opened = await $.ui.open({ id: PANE_ID, title: 'edit-guard', focus: true, rows: paneRows(mine.report) })
     isPlaced = opened.isPlaced
@@ -86,7 +93,8 @@ async function guard($: any, e: any, next: any, tool: 'Bash' | 'PowerShell') {
 
     const startedAt: number = await $.clock.now()
     while (mine.decision === null) {
-      if ((await $.clock.now()) - startedAt > HOLD_LIMIT_MS) {
+      mine.leftMs = HOLD_LIMIT_MS - ((await $.clock.now()) - startedAt)
+      if (mine.leftMs <= 0) {
         mine.decision = 'timeout'
         break
       }
@@ -94,6 +102,8 @@ async function guard($: any, e: any, next: any, tool: 'Bash' | 'PowerShell') {
         mine.decision = 'interrupted'
         break
       }
+      // 남은 시간과 명령 펼침 상태를 다시 그린다.
+      $.ui.invalidate('ui.render')
       await pause($)
     }
   } catch {
@@ -121,7 +131,7 @@ async function guard($: any, e: any, next: any, tool: 'Bash' | 'PowerShell') {
       error: 'edit-guard 에서 오류가 났습니다',
     } as Record<string, string>)[mine.decision ?? ''] ?? '답이 기록되지 않았습니다'
   return {
-    deny: `edit-guard: 이 명령을 붙잡아 실행하지 않았습니다 (${why}). 실행하면 ${summary}. 사용자가 요청하기 전에는 다시 시도하지 마세요.`,
+    deny: `edit-guard: 이 명령을 붙잡아 실행하지 않았습니다 (${why}). ${unknown ? `영향 범위를 알 수 없었습니다 (${summary})` : `실행하면 ${summary}`}. 사용자가 요청하기 전에는 다시 시도하지 마세요.`,
   }
 }
 
@@ -373,9 +383,14 @@ function classifyPs(segment: string): Risk | null {
 
 // ---- 영향 범위 측정 ----------------------------------------------------------
 
-async function measure($: any, risk: Risk, cwd: string): Promise<Report> {
+// 변수·명령 치환이 든 경로는 우리가 풀지 못한다. 못 푼 경로로 "없음"을 말하면 안 된다.
+function hasVar(targets: string[]): boolean {
+  return targets.some(t => /[$`]|%\w+%/.test(t))
+}
+
+export async function measure($: any, risk: Risk, cwd: string): Promise<Report> {
   if (risk.kind === 'unmeasured') {
-    return { summary: `${risk.label}: 지울 대상을 미리 셀 수 없습니다`, lines: [], note: '이 명령은 영향 범위를 미리 잴 수 없습니다. 명령 전체를 확인하고 진행하세요.' }
+    return { summary: `${risk.label}: 영향 범위를 모름 (지울 대상을 미리 셀 수 없습니다)`, lines: [], unknown: true, note: '이 명령은 영향 범위를 미리 잴 수 없습니다. 명령 전체를 확인하고 진행하세요.' }
   }
   try {
     if (risk.kind === 'rm') return await measureRm($, risk, cwd)
@@ -383,9 +398,10 @@ async function measure($: any, risk: Risk, cwd: string): Promise<Report> {
     return await measureGit($, risk, cwd)
   } catch (error: any) {
     return {
-      summary: `${risk.label} (영향 범위를 재지 못함)`,
+      summary: `${risk.label}: 영향 범위를 모름 (측정하지 못했습니다)`,
       lines: [],
-      note: `측정 실패: ${String(error?.message ?? error).slice(0, 200)}. bash/git 이 PATH 에 있는지 확인하세요.`,
+      unknown: true,
+      note: `측정 실패: ${String(error?.message ?? error).slice(0, 200)}. 영향이 없다는 뜻이 아닙니다. bash/git 이 PATH 에 있는지 확인하세요.`,
     }
   }
 }
@@ -416,6 +432,9 @@ async function measureRm($: any, risk: Risk, cwd: string): Promise<Report> {
   const run = await runBash($, ['-c', RM_SCRIPT, 'edit-guard', ...targets], { cwd, timeoutMs: 15000 })
   const [head, ...rest] = String(run.stdout).split('\n').filter((l: string) => l !== '')
   const [files, bytes, found] = (head ?? '0 0 0').split(' ').map(Number)
+  if (!found && hasVar(targets)) {
+    return { summary: '영향 범위를 모름 (경로에 변수가 있어 읽지 못했습니다)', lines: [], unknown: true, note: `경로: ${targets.join(' ')}. 파일이 없다는 뜻이 아닙니다.` }
+  }
   if (!found) return { summary: `지울 것이 없음: ${targets.join(' ')} 와 맞는 파일이 없습니다`, lines: [], note: '경로가 없어서 rm 이 지울 것이 없습니다.' }
   if (!files) return { summary: `파일 없는 경로 ${found}개를 지웁니다`, lines: [], note: `경로: ${targets.join(' ')}` }
   return {
@@ -423,6 +442,7 @@ async function measureRm($: any, risk: Risk, cwd: string): Promise<Report> {
     lines: rest.map((l: string) => l.replace(/^\.\//, '')),
     more: Math.max(0, files - rest.length),
     note: `경로: ${targets.join(' ')}`,
+    recover: RECOVER_FILES,
   }
 }
 
@@ -439,6 +459,9 @@ async function runBash($: any, args: string[], opts: any) {
   throw last
 }
 
+// 지운 파일이 git 에 올라 있는지는 재지 않았다. 아는 것만 말한다.
+const RECOVER_FILES = '모름 (git 에 올려 둔 파일이면 되살릴 수 있습니다)'
+
 function psq(s: string): string {
   return `'${s.replace(/'/g, "''")}'`
 }
@@ -454,12 +477,16 @@ async function measurePsRemove($: any, risk: Risk, cwd: string): Promise<Report>
   const run = await $.process.run(['powershell', '-NoProfile', '-Command', script], { cwd, timeoutMs: 20000 })
   const [head, ...rest] = String(run.stdout).split(/\r?\n/).filter((l: string) => l !== '')
   const [files, bytes] = (head ?? '0 0').split(' ').map(Number)
+  if (!files && hasVar(targets)) {
+    return { summary: '영향 범위를 모름 (경로에 변수가 있어 읽지 못했습니다)', lines: [], unknown: true, note: `경로: ${targets.join(' ')}. 파일이 없다는 뜻이 아닙니다.` }
+  }
   if (!files) return { summary: `지울 파일이 없음: ${targets.join(' ')}`, lines: [], note: '경로가 없거나 파일이 없는 폴더입니다.' }
   return {
     summary: `파일 ${files}개 삭제 (약 ${size(bytes)})`,
     lines: rest,
     more: Math.max(0, files - rest.length),
     note: `경로: ${targets.join(' ')}`,
+    recover: RECOVER_FILES,
   }
 }
 
@@ -486,18 +513,19 @@ async function measureGit($: any, risk: Risk, cwd: string): Promise<Report> {
       } else if (!a.startsWith('-')) paths.push(a)
     }
     const run = await $.process.run(['git', 'clean', '-n', ...flags, '--', ...paths], { cwd, timeoutMs: 15000 })
-    if (run.exitCode !== 0) return { summary: 'git clean (미리보기 실패)', lines: [], note: String(run.stderr).trim().slice(0, 200) }
+    if (run.exitCode !== 0) return { summary: 'git clean: 영향 범위를 모름 (미리보기에 실패했습니다)', lines: [], unknown: true, note: String(run.stderr).trim().slice(0, 200) }
     const gone = String(run.stdout).split('\n').filter((l: string) => l.startsWith('Would remove ')).map((l: string) => l.slice(13))
     return {
       summary: gone.length === 0 ? '지울 것이 없음: 맞는 추적 안 된 파일이 없습니다' : `추적 안 된 경로 ${gone.length}개 삭제`,
       lines: gone.slice(0, LIST_MAX),
       more: Math.max(0, gone.length - LIST_MAX),
-      note: 'git clean -n 결과입니다. 추적 안 된 파일은 git 에 없어서 되살릴 수 없습니다.',
+      note: 'git clean -n 결과입니다.',
+      recover: gone.length === 0 ? undefined : '추적 안 된 파일이라 git 으로는 되살리기 어렵습니다',
     }
   }
 
   const status = await $.process.run(['git', 'status', '--porcelain'], { cwd, timeoutMs: 15000 })
-  if (status.exitCode !== 0) return { summary: `${risk.label} (git 저장소가 아닌 듯함)`, lines: [], note: String(status.stderr).trim().slice(0, 200) }
+  if (status.exitCode !== 0) return { summary: `${risk.label}: 영향 범위를 모름 (git 저장소인지 확인하지 못했습니다)`, lines: [], unknown: true, note: String(status.stderr).trim().slice(0, 200) }
   const rows = String(status.stdout).split('\n').filter((l: string) => l.length > 3 && !l.startsWith('??'))
   // reset --hard 는 스테이징·작업 트리 변경을 모두, checkout . 은 작업 트리 변경만 버린다.
   const lost = risk.kind === 'git-reset' ? rows : rows.filter((l: string) => l[1] !== ' ')
@@ -515,14 +543,15 @@ async function measureGit($: any, risk: Risk, cwd: string): Promise<Report> {
       summary: `커밋 ${dropped.length}개를 현재 브랜치에서 내리고, 커밋 안 한 변경 ${lost.length}개 파일을 버립니다`,
       lines: [...dropped.slice(0, LIST_MAX), ...lost.slice(0, Math.max(0, LIST_MAX - dropped.length)).map((l: string) => `${l.slice(0, 2)} ${l.slice(3)}`)],
       more: Math.max(0, dropped.length + lost.length - LIST_MAX),
-      note: '내려간 커밋은 git reflog 로 되찾을 수 있지만, 커밋 안 한 변경은 되살릴 수 없습니다.',
+      recover: '내려간 커밋은 git reflog 로 되찾을 수 있습니다. 커밋 안 한 변경은 git 으로 되살리기 어렵습니다',
     }
   }
   return {
     summary: lost.length === 0 ? '버릴 것이 없음: 커밋 안 한 변경이 없습니다' : `커밋 안 한 변경 ${lost.length}개 파일을 버립니다`,
     lines: lost.slice(0, LIST_MAX).map((l: string) => `${l.slice(0, 2)} ${l.slice(3)}`),
     more: Math.max(0, lost.length - LIST_MAX),
-    note: statText !== '' ? `${statText}. 커밋 안 한 변경은 되살릴 수 없습니다.` : 'git status --porcelain 결과입니다.',
+    note: statText !== '' ? `${statText}.` : 'git status --porcelain 결과입니다.',
+    recover: lost.length === 0 ? undefined : '커밋 안 한 변경은 git 으로 되살리기 어렵습니다',
   }
 }
 
@@ -540,7 +569,7 @@ async function measurePush($: any, args: string[], cwd: string): Promise<Report>
   source = source || 'HEAD'
   const ref = `${remote}/${branch}`
   const known = await $.process.run(['git', 'rev-parse', '--verify', '--quiet', ref], { cwd, timeoutMs: 10000 })
-  if (known.exitCode !== 0) return { summary: `${ref} 로 강제 푸시`, lines: [], note: `${ref} 의 로컬 사본이 없어 사라질 커밋을 알 수 없습니다. 먼저 git fetch 하세요.` }
+  if (known.exitCode !== 0) return { summary: `${ref} 로 강제 푸시: 영향 범위를 모름 (로컬 사본이 없습니다)`, lines: [], unknown: true, note: `${ref} 의 로컬 사본이 없어 사라질 커밋을 알 수 없습니다. 먼저 git fetch 하세요.` }
   const log = await $.process.run(['git', 'log', '--oneline', '--no-decorate', `${source}..${ref}`], { cwd, timeoutMs: 15000 })
   const dropped = String(log.stdout).split('\n').filter((l: string) => l !== '')
   return {
@@ -548,6 +577,7 @@ async function measurePush($: any, args: string[], cwd: string): Promise<Report>
     lines: dropped.slice(0, LIST_MAX),
     more: Math.max(0, dropped.length - LIST_MAX),
     note: `${ref} 에 있고 ${source} 에는 없는 커밋입니다 (마지막 fetch 기준).`,
+    recover: dropped.length === 0 ? undefined : '모름',
   }
 }
 
@@ -565,38 +595,67 @@ function size(bytes: number): string {
 
 // ---- 그리기 ----------------------------------------------------------------
 
+// 칸 수: 테두리 2 + 제목·영향·복구·위치 4 + 목록 앞 빈 줄 1 + 메모 1 + 명령 토글 1 + 펼친 명령 3 + 버튼 2.
 function paneRows(report: Report): number {
-  return Math.min(24, 9 + report.lines.length + (report.more ? 1 : 0))
+  return Math.min(24, 14 + report.lines.length + (report.more ? 1 : 0) + (report.unknown ? 1 : 0))
 }
 
-function draw(t: any, state: Held) {
+// 위험을 한 단어로 먼저 말한다.
+const ACTION: Record<string, string> = {
+  rm: '삭제',
+  'ps-remove': '삭제',
+  unmeasured: '삭제',
+  'git-reset': '변경 버리기',
+  'git-checkout': '변경 버리기',
+  'git-clean': '추적 안 된 파일 삭제',
+  'git-push-force': '강제 푸시',
+}
+
+function clock(ms: number): string {
+  const s = Math.max(0, Math.ceil(ms / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
+// 읽는 순서: 영향 → 복구 → 위치 → 목록 → 명령. 명령은 접어 두고, 영향을 모를 때만 처음부터 펼친다.
+export function draw(t: any, state: Held) {
   const { Box, Text, Button } = t
   const report = state.report as Report
-  const list = report.lines.map((line, i) => Text({ key: `l${i}`, children: `  ${line}`, wrap: 'truncate-end' }))
+  const unknown = report.unknown === true
+  const cwd = state.cwd.replace(/\\/g, '/')
+  const rel = (p: string) => {
+    const q = p.replace(/\\/g, '/')
+    return cwd !== '' && q.startsWith(`${cwd}/`) ? q.slice(cwd.length + 1) : q
+  }
+  const list = report.lines.map((line, i) => Text({ key: `l${i}`, children: `  ${rel(line)}`, wrap: 'truncate-end' }))
   if (report.more) list.push(Text({ key: 'more', dimColor: true, children: `  + ${report.more}개 더` }))
   // 버튼은 이 패널이 그려진 그 호출에만 답한다.
   const decide = (choice: string) => () => {
     if (state.decision === null) state.decision = choice
   }
+  const action = ACTION[state.risk.kind] ?? state.risk.label
   return Box({
     flexDirection: 'column',
     borderStyle: 'round',
-    borderColor: 'yellow',
+    borderColor: 'warning',
     paddingX: 1,
     children: [
-      Text({ key: 'title', bold: true, color: 'yellow', children: `⚠ edit-guard · ${state.risk.label}` }),
-      Text({ key: 'cmd', children: [Text({ dimColor: true, children: '명령  ' }), Text({ bold: true, children: state.command })], wrap: 'truncate-end' }),
-      Text({ key: 'sum', children: [Text({ dimColor: true, children: '영향  ' }), Text({ color: 'red', bold: true, children: report.summary })] }),
+      Text({ key: 'title', bold: true, color: 'warning', wrap: 'truncate-end', children: unknown ? `? 영향 범위 모름 · ${action} (${state.risk.label})` : `⚠ ${action} · ${state.risk.label}` }),
+      // 모름은 빨강(위험 단정)이 아니라 주의 색으로 그린다.
+      Text({ key: 'sum', wrap: 'wrap', children: [Text({ dimColor: true, children: '영향  ' }), Text({ color: unknown ? 'warning' : 'error', bold: true, children: report.summary })] }),
+      report.recover ? Text({ key: 'rec', wrap: 'wrap', children: [Text({ dimColor: true, children: '복구  ' }), Text({ children: report.recover })] }) : null,
+      Text({ key: 'where', wrap: 'truncate-middle', children: [Text({ dimColor: true, children: '위치  ' }), Text({ children: state.cwd })] }),
       Box({ key: 'list', flexDirection: 'column', marginTop: 1, children: list }),
       report.note ? Text({ key: 'note', dimColor: true, italic: true, children: report.note, wrap: 'wrap' }) : null,
+      Button({ key: 'cmdtoggle', label: state.showCommand ? '명령 접기 ▾' : '명령 보기 ▸', plain: true, dimColor: true, onPress: () => { state.showCommand = !state.showCommand } }),
+      state.showCommand ? Text({ key: 'cmd', wrap: 'wrap', children: [Text({ dimColor: true, children: '명령  ' }), Text({ bold: true, children: state.command })] }) : null,
       Box({
         key: 'buttons',
         marginTop: 1,
         gap: 2,
         children: [
-          Button({ key: 'proceed', label: '진행', hotkey: '1', plain: true, onPress: decide('proceed') }),
           Button({ key: 'cancel', label: '취소', hotkey: '2', plain: true, autoFocus: true, onPress: decide('cancel') }),
-          Text({ key: 'hint', dimColor: true, children: 'Claude 가 답을 기다리는 중' }),
+          Button({ key: 'proceed', label: unknown ? '그래도 진행' : '진행', hotkey: '1', plain: true, onPress: decide('proceed') }),
+          Text({ key: 'hint', dimColor: true, children: `Claude 가 기다리는 중 · ${clock(state.leftMs)} 남음` }),
         ],
       }),
     ],

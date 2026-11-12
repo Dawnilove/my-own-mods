@@ -18,7 +18,14 @@ const TSC_TIMEOUT_MS = 45_000
 const WEIGHT_WEEKEND = 0.3
 
 type Verify = { state: 'ok' | 'fail' | 'skip'; text: string } | null
-type Seg = { prio: number; text: string; color?: string; dim?: boolean }
+// level: 이상 없음은 비우고, 이상은 warn/err, 진행 중은 info, 흐리게 둘 값은 mute.
+type Level = 'info' | 'warn' | 'err' | 'ok' | 'mute'
+type Seg = { prio: number; label?: string; value: string; level?: Level }
+const LEVEL_COLOR: Record<string, string> = { ok: 'success', info: 'suggestion', warn: 'warning', err: 'error' }
+const segText = (s: Seg) => (s.label ? `${s.label} ${s.value}` : s.value)
+const isAlert = (s: Seg) => s.level === 'warn' || s.level === 'err'
+// 색만으로 말하지 않도록 이상 값 앞에 기호를 붙인다.
+const mark = (level: Level | undefined, v: string) => (level === 'err' ? `✗ ${v}` : level === 'warn' ? `⚠ ${v}` : v)
 
 let verify: Verify = null
 let verifying = false
@@ -118,7 +125,10 @@ export const register: Register = on => {
       const children: any[] = []
       kept.forEach((s, i) => {
         if (i > 0) children.push(Text({ key: `${key}sep${i}`, dimColor: true, children: ' │ ' }))
-        children.push(Text({ key: `${key}s${i}`, color: s.color, dimColor: s.dim, children: s.text }))
+        // 이름은 흐리게, 값은 단계 색으로. 칸 안에서는 줄을 바꾸지 않고 끝을 줄인다.
+        const value = Text({ key: 'v', color: LEVEL_COLOR[s.level ?? ''], dimColor: s.level === 'mute', weight: isAlert(s) ? 'bold' : undefined, children: s.value })
+        const parts = s.label ? [Text({ key: 'l', dimColor: true, children: `${s.label} ` }), value] : [value]
+        children.push(Text({ key: `${key}s${i}`, wrap: 'truncate-end', children: parts }))
       })
       return Box({ key, children })
     }
@@ -198,48 +208,52 @@ export function dailyBudget(percent: number, base: number, resetsAt: string | un
 
 function buildSegs(now: number, isWorking: boolean): Seg[] {
   const segs: Seg[] = []
-  if (verifying) segs.push({ prio: 1, text: '검증 중…', color: 'cyan' })
-  else if (verify) segs.push({ prio: 1, text: verify.text, color: verify.state === 'ok' ? 'green' : verify.state === 'fail' ? 'red' : 'yellow' })
+  if (verifying) segs.push({ prio: 1, value: '● 검증 중…', level: 'info' })
+  else if (verify) segs.push({ prio: 1, value: verify.text, level: verify.state === 'ok' ? 'ok' : verify.state === 'fail' ? 'err' : 'warn' })
 
-  segs.push({ prio: 2, text: `자식 ${children}`, dim: children === 0, color: children > 0 ? 'cyan' : undefined })
+  segs.push({ prio: 2, label: '자식', value: String(children), level: children > 0 ? 'info' : 'mute' })
 
   if (context) {
     const p = context.percent
-    segs.push({ prio: 3, text: `컨텍스트 ${p}%`, color: p >= 85 ? 'red' : p >= 70 ? 'yellow' : undefined })
+    const level: Level | undefined = p >= 85 ? 'err' : p >= 70 ? 'warn' : undefined
+    segs.push({ prio: 3, label: '컨텍스트', value: mark(level, `${p}%`), level })
   }
 
   if (week) {
     const b = dayBase ? dailyBudget(week.percent, dayBase.percent, week.resetsAt, now) : null
     if (b && dayBase) {
       const used = Math.max(0, week.percent - dayBase.percent)
-      const color = used > b.recommended * 1.5 ? 'red' : used > b.recommended ? 'yellow' : undefined
-      segs.push({ prio: 4, text: `주 ${Math.round(week.percent)}% · 오늘 ${used.toFixed(0)}/${b.recommended.toFixed(0)}`, color })
+      const level: Level | undefined = used > b.recommended * 1.5 ? 'err' : used > b.recommended ? 'warn' : undefined
+      segs.push({ prio: 4, label: '주', value: mark(level, `${Math.round(week.percent)}% · 오늘 ${used.toFixed(0)}/${b.recommended.toFixed(0)}`), level })
       const pace = Math.round(b.pace)
-      segs.push({ prio: 9, text: pace > 0 ? `페이스 +${pace}%p 앞섬` : `페이스 ${pace}%p 여유`, color: pace > 10 ? 'yellow' : undefined, dim: pace <= 10 })
+      segs.push({ prio: 9, label: '페이스', value: pace > 0 ? `${mark(pace > 10 ? 'warn' : undefined, `+${pace}%p`)} 앞섬` : `${pace}%p 여유`, level: pace > 10 ? 'warn' : 'mute' })
     } else {
-      segs.push({ prio: 4, text: `주 ${Math.round(week.percent)}%` })
+      segs.push({ prio: 4, label: '주', value: `${Math.round(week.percent)}%` })
     }
   }
 
   else if (lastUsageAt > 0) {
     // 주간 한도를 못 찾았을 때 이유를 띠에 보여 준다. 확인이 끝나면 지운다.
-    segs.push({ prio: 4, text: limitKinds.length > 0 ? `한도 종류 ${limitKinds.join(',')}` : '한도 값 없음', dim: true })
+    segs.push({ prio: 4, value: limitKinds.length > 0 ? `한도 종류 ${limitKinds.join(',')}` : '한도 값 없음', level: 'mute' })
   }
 
-  if (isWorking && turnStartedAt > 0) segs.push({ prio: 5, text: `턴 ${fmt(Math.round((now - turnStartedAt) / 1000))}`, color: 'cyan' })
-  else if (lastTurnSec !== null) segs.push({ prio: 5, text: `턴 ${fmt(lastTurnSec)}`, dim: true })
+  if (isWorking && turnStartedAt > 0) segs.push({ prio: 5, label: '턴', value: fmt(Math.round((now - turnStartedAt) / 1000)), level: 'info' })
+  else if (lastTurnSec !== null) segs.push({ prio: 5, label: '턴', value: fmt(lastTurnSec), level: 'mute' })
 
-  if (costUsd !== null) segs.push({ prio: 6, text: `$${costUsd.toFixed(2)}` })
+  if (costUsd !== null) segs.push({ prio: 6, value: `$${costUsd.toFixed(2)}` })
 
   if (!isWorking && lastAnswerAt > 0) {
     const left = CACHE_MINUTES - Math.floor((now - lastAnswerAt) / 60_000)
-    if (left <= 0) segs.push({ prio: 7, text: '캐시 만료', color: 'red' })
-    else segs.push({ prio: 7, text: `캐시 ${left}분`, color: left <= 10 ? 'red' : left <= 20 ? 'yellow' : undefined, dim: left > 20 })
+    if (left <= 0) segs.push({ prio: 7, label: '캐시', value: mark('err', '만료'), level: 'err' })
+    else {
+      const level: Level = left <= 10 ? 'err' : left <= 20 ? 'warn' : 'mute'
+      segs.push({ prio: 7, label: '캐시', value: mark(level, `${left}분`), level })
+    }
   }
 
   if (context && history.length > 0) {
     const bars = history.map(p => BARS[Math.min(BARS.length - 1, Math.floor((p / 100) * BARS.length))]).join('')
-    segs.push({ prio: 8, text: `${forecast(context.percent)} ${bars}`, dim: true })
+    segs.push({ prio: 8, value: `${forecast(context.percent)} ${bars}`, level: 'mute' })
   }
   return segs
 }
@@ -257,10 +271,14 @@ function fmt(sec: number): string {
 export function fit(segs: Seg[], cols: number): Seg[] {
   // 한글·한자는 터미널에서 두 칸을 차지한다.
   const cells = (t: string) => [...t].reduce((n, ch) => n + (/[ᄀ-ᅟ⺀-꓏가-힣豈-﫿＀-｠]/.test(ch) ? 2 : 1), 0)
-  const width = (list: Seg[]) => list.reduce((n, s) => n + cells(s.text) + 3, 0) - 3
+  const width = (list: Seg[]) => list.reduce((n, s) => n + cells(segText(s)) + 3, 0) - 3
   let kept = [...segs]
-  while (kept.length > 1 && width(kept) > cols - 2) {
-    const worst = Math.max(...kept.map(s => s.prio))
+  // 데스크톱 글자 폭이 계산과 달라도 줄이 꺾이지 않도록 여유를 6칸 둔다.
+  while (kept.length > 1 && width(kept) > cols - 6) {
+    // 이상(warn/err) 칸은 마지막까지 남기고, 정상 칸 중 번호가 큰 것부터 뺀다.
+    const quiet = kept.filter(s => !isAlert(s))
+    const pool = quiet.length > 0 ? quiet : kept
+    const worst = Math.max(...pool.map(s => s.prio))
     kept = kept.filter(s => s.prio !== worst)
   }
   return kept.sort((a, b) => a.prio - b.prio)

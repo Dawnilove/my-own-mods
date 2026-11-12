@@ -25,14 +25,25 @@ test('리셋이 낀 마지막 날은 리셋 시각까지의 몫만 센다', () =
 
 test('좁으면 번호가 큰 칸부터 숨긴다', () => {
   const segs = [
-    { prio: 1, text: '✓ 검증 2' },
-    { prio: 3, text: '컨텍스트 43%' },
-    { prio: 7, text: '캐시 38분' },
-    { prio: 9, text: '페이스 +6%p 앞섬' },
+    { prio: 1, value: '✓ 검증 2' },
+    { prio: 3, label: '컨텍스트', value: '43%' },
+    { prio: 7, label: '캐시', value: '38분' },
+    { prio: 9, label: '페이스', value: '+6%p 앞섬' },
   ]
   expect(fit(segs, 200).length).toBe(4)
-  const narrow = fit(segs, 30)
+  const narrow = fit(segs, 36)
   expect(narrow.map(s => s.prio)).toEqual([1, 3])
+})
+
+test('아주 좁아도 이상 칸은 남긴다', () => {
+  const segs = [
+    { prio: 1, value: '✓ 검증 2', level: 'ok' as const },
+    { prio: 3, label: '컨텍스트', value: '⚠ 72%', level: 'warn' as const },
+    { prio: 7, label: '캐시', value: '38분', level: 'mute' as const },
+  ]
+  expect(fit(segs, 18).map(s => s.prio)).toEqual([3])
+  // 이상 칸이 없으면 번호가 작은 칸이 남는다
+  expect(fit(segs.map(s => ({ ...s, level: undefined })), 18).map(s => s.prio)).toEqual([1])
 })
 
 test('띠는 컨텍스트 값을 그린다', async ($, on) => {
