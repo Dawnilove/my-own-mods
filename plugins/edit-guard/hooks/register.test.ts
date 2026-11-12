@@ -34,9 +34,20 @@ test('모름 패널은 명령을 펼치고 변수를 오류 색으로 낸다', (
   )
   expect(json).toContain('영향 범위 모름')
   expect(json).toContain('그래도 진행')
-  expect(json).toContain('▾ 명령 접기')
   expect(json).toContain('원인')
   expect(json).toMatch(/"color":"error"[^}]*"children":"\$D"/) // 명령 안의 $D
+  // 시안 C: 위치 줄과 접기 버튼이 없고 명령 상자만 항상 보인다
+  expect(json).not.toContain('"위치"')
+  expect(json).not.toContain('명령 접기')
+  expect(json).toContain('cmdbox')
+})
+
+test('긴 명령은 상자에 몇 줄만 보인다', () => {
+  const long = Array.from({ length: 10 }, (_, i) => `echo ${i}`).join('\n')
+  const json = JSON.stringify(draw(fake, held({ summary: '지울 대상을 확인하지 못했습니다', lines: [], unknown: true }, { showCommand: true, command: long })) as any)
+  expect(json).toContain('echo 5')
+  expect(json).not.toContain('echo 6')
+  expect(json).toContain('… 외 4줄')
 })
 
 test('패널을 못 놓는 창은 한 줄 구성으로 그린다', () => {

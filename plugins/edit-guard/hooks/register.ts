@@ -448,7 +448,7 @@ async function measureRm($: any, risk: Risk, cwd: string): Promise<Report> {
   const [head, ...rest] = String(run.stdout).split('\n').filter((l: string) => l !== '')
   const [files, bytes, found] = (head ?? '0 0 0').split(' ').map(Number)
   if (!found && hasVar(targets)) {
-    return { summary: '지울 대상을 확인하지 못했습니다', lines: [], unknown: true, recover: [NOT_NONE], facts: [['원인', `변수 ${varName(targets)} 를 풀지 못했습니다`], ['경로', targets.join(' ')]] }
+    return { summary: '지울 대상을 확인하지 못했습니다', lines: [], unknown: true, recover: [NOT_NONE], facts: [['원인', `변수 ${varName(targets)} 를 풀지 못했습니다`], ['또는', 'bash 를 찾지 못했습니다']] }
   }
   if (!found) return { summary: `지울 것이 없음: ${targets.join(' ')} 와 맞는 파일이 없습니다`, lines: [], note: '경로가 없어서 rm 이 지울 것이 없습니다.' }
   if (!files) return { summary: `파일 없는 경로 ${found}개를 지웁니다`, lines: [], note: `경로: ${targets.join(' ')}` }
@@ -490,7 +490,7 @@ async function measurePsRemove($: any, risk: Risk, cwd: string): Promise<Report>
   const [head, ...rest] = String(run.stdout).split(/\r?\n/).filter((l: string) => l !== '')
   const [files, bytes] = (head ?? '0 0').split(' ').map(Number)
   if (!files && hasVar(targets)) {
-    return { summary: '지울 대상을 확인하지 못했습니다', lines: [], unknown: true, recover: [NOT_NONE], facts: [['원인', `변수 ${varName(targets)} 를 풀지 못했습니다`], ['경로', targets.join(' ')]] }
+    return { summary: '지울 대상을 확인하지 못했습니다', lines: [], unknown: true, recover: [NOT_NONE], facts: [['원인', `변수 ${varName(targets)} 를 풀지 못했습니다`], ['또는', 'bash 를 찾지 못했습니다']] }
   }
   if (!files) return { summary: `지울 파일이 없음: ${targets.join(' ')}`, lines: [], note: '경로가 없거나 파일이 없는 폴더입니다.' }
   return {
@@ -620,7 +620,7 @@ function size(bytes: number): string {
 
 // 칸 수: 테두리 2 + 제목 1 + 영향 2 + 위치 2 + 목록 앞 빈 줄 1 + 메모 1 + 명령 토글 1 + 펼친 명령 3 + 버튼 1 + 남은 시간 1, 거기에 복구·원인·목록 줄.
 function paneRows(report: Report): number {
-  return Math.min(28, 15 + report.lines.length + (report.more ? 1 : 0) + (report.recover?.length ?? 0) + (report.facts?.length ?? 0))
+  return Math.min(30, 18 + report.lines.length + (report.more ? 1 : 0) + (report.recover?.length ?? 0) + (report.facts?.length ?? 0))
 }
 
 // 위험을 한 단어로 먼저 말한다.
@@ -633,6 +633,7 @@ const TITLE: Record<string, string> = {
   'git-clean': '추적 안 된 파일 삭제',
   'git-push-force': '강제 푸시',
 }
+const CMD_LINES = 6
 const RECOVER_COLOR: Record<string, string | undefined> = { err: 'error', warn: 'warning', mute: undefined }
 const BADGE: Record<string, string> = { M: 'warning', A: 'success', D: 'error' }
 
@@ -704,8 +705,10 @@ export function draw(t: any, state: Held, compact = false) {
   }
   const list = report.lines.map(row)
   if (report.more) list.push(Text({ key: 'more', dimColor: true, children: `+ ${report.more}개 더` }))
-  // 명령 안의 변수($D 같은 것)는 오류 색으로 표시한다.
-  const cmd = state.command
+  // 명령 상자는 몇 줄만 보인다. 명령 안의 변수($D 같은 것)는 오류 색으로 표시한다.
+  const cmdLines = state.command.split('\n')
+  const shownCmd = cmdLines.length > CMD_LINES ? `${cmdLines.slice(0, CMD_LINES).join('\n')}\n… 외 ${cmdLines.length - CMD_LINES}줄` : state.command
+  const cmd = shownCmd
     .split(/(\$\{?\w+\}?|%\w+%)/)
     .filter(p => p !== '')
     .map((p, i) => (/^[$%]/.test(p) ? Text({ key: `c${i}`, color: 'error', bold: true, children: p }) : Text({ key: `c${i}`, children: p })))
@@ -723,14 +726,16 @@ export function draw(t: any, state: Held, compact = false) {
         gap: 1,
         children: [Text({ key: 't', bold: true, color: titleColor, children: title }), Text({ key: 'chip', dimColor: true, mono: true, wrap: 'truncate-end', children: state.risk.label })],
       }),
-      Text({ key: 'hero', size: 'heading', weight: 'bold', color: heroColor, wrap: 'wrap', children: report.summary }),
+      Text({ key: 'hero', size: 'title', weight: 'bold', color: heroColor, wrap: 'wrap', children: report.summary }),
       ...(report.recover ?? []).map(([lv, text], i) => Text({ key: `rec${i}`, color: RECOVER_COLOR[lv], dimColor: lv === 'mute', wrap: 'wrap', children: text })),
-      Box({ key: 'where', flexDirection: 'column', children: [Text({ key: 'k', dimColor: true, children: '위치' }), Text({ key: 'v', mono: true, wrap: 'truncate-middle', children: state.cwd })] }),
+      // 시안 C(모름)에는 위치 줄이 없다. 영향을 잰 폴더는 잰 뒤에만 의미가 있다.
+      unknown ? null : Box({ key: 'where', flexDirection: 'column', children: [Text({ key: 'k', dimColor: true, children: '위치' }), Text({ key: 'v', mono: true, wrap: 'truncate-middle', children: state.cwd })] }),
       ...(report.facts ?? []).map(([k, v], i) => Box({ key: `fact${i}`, gap: 2, children: [Text({ key: 'k', dimColor: true, children: k }), Text({ key: 'v', wrap: 'wrap', children: v })] })),
       list.length > 0 ? Box({ key: 'list', flexDirection: 'column', children: list }) : null,
       report.note ? Text({ key: 'note', dimColor: true, italic: true, children: report.note, wrap: 'wrap' }) : null,
-      Button({ key: 'cmdtoggle', label: state.showCommand ? '▾ 명령 접기' : '▸ 명령 보기', plain: true, dimColor: true, onPress: () => { state.showCommand = !state.showCommand } }),
-      state.showCommand ? Text({ key: 'cmd', mono: true, wrap: 'wrap', children: cmd }) : null,
+      // 모름 패널은 명령 상자만 항상 보이고 접기 버튼이 없다(시안 C).
+      unknown ? null : Button({ key: 'cmdtoggle', label: state.showCommand ? '▾ 명령 접기' : '▸ 명령 보기', plain: true, dimColor: true, onPress: () => { state.showCommand = !state.showCommand } }),
+      state.showCommand || unknown ? Box({ key: 'cmdbox', backgroundColor: 'userMessageBackground', paddingX: 1, children: [Text({ key: 'cmd', mono: true, wrap: 'wrap', children: cmd })] }) : null,
       buttons,
       wait,
     ],

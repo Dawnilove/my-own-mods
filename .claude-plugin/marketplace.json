@@ -7,7 +7,7 @@
       "name": "edit-guard",
       "source": "./plugins/edit-guard",
       "description": "Mod: 파일을 깨뜨리는 sed/heredoc 치환 명령은 막고, 위험한 삭제·git 명령은 영향 범위를 보여주고 진행/취소를 묻습니다.",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "category": "mod"
     },
     {
