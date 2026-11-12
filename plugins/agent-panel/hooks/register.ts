@@ -374,6 +374,15 @@ export const register: Register = on => {
     }
     const now = Date.now()
     const anyLive = all.some(a => isLive(a.status))
+    const total = `합계 ${all.length}개 · 호출 ${all.reduce((n, a) => n + a.calls, 0)}회`
+    // 시안: 약 760px 이상으로 넓게 펼치면 두 줄 대신 표(이름·유형·상태·시간·호출·마지막)로 그린다.
+    if (((e as any).props?.bodyColumns ?? 0) >= WIDE_COLUMNS) {
+      const ordered = [...all.filter(a => isLive(a.status)).sort((a, b) => b.startedAt - a.startedAt), ...all.filter(a => !isLive(a.status)).sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))]
+      return Box({
+        flexDirection: 'column',
+        children: [tableHead(Box, Text), ...ordered.map(a => tableRow(Box, Text, a, now)), Text({ key: 'total', dimColor: true, children: total })],
+      })
+    }
     const body: any[] = []
     for (const g of GROUPS) {
       // 실행 중은 시작이 늦은 것부터, 끝난 것은 늦게 끝난 것부터.
@@ -386,13 +395,44 @@ export const register: Register = on => {
           key: `g-${g.key}`,
           flexDirection: 'column',
           marginTop: body.length > 0 ? 1 : 0,
-          children: [Text({ key: 'h', dimColor: true, children: `${g.title} ${rows.length}` }), ...rows.map(a => row(Box, Text, Svg, a, now, anyLive))],
+          children: [Text({ key: 'h', dimColor: true, bold: true, children: `${g.title} · ${rows.length}` }), ...rows.map(a => row(Box, Text, Svg, a, now, anyLive))],
         }),
       )
     }
-    const n = (k: string) => all.filter(a => groupOf(a.status) === k).length
-    body.push(Text({ key: 'total', dimColor: true, children: `합계 ${all.length} · 실행 중 ${n('live')} · 확인 필요 ${n('check')} · 완료 ${n('done')}` }))
+    body.push(Text({ key: 'total', dimColor: true, children: total }))
     return Box({ flexDirection: 'column', children: body })
+  })
+}
+
+// 넓은 패널의 표. 칸 너비는 글자 칸 수(한글 2칸).
+const WIDE_COLUMNS = 95
+const COLS = { type: 16, status: 8, time: 8, calls: 7, last: 12 }
+
+function tableHead(Box: any, Text: any) {
+  const cell = (key: string, width: number | undefined, label: string) => Box({ key, width, flexGrow: width === undefined ? 1 : 0, flexShrink: 0, children: [Text({ dimColor: true, children: label })] })
+  return Box({
+    key: 'head',
+    gap: 1,
+    children: [cell('n', undefined, '이름'), cell('t', COLS.type, '유형'), cell('s', COLS.status, '상태'), cell('m', COLS.time, '시간'), cell('c', COLS.calls, '호출'), cell('l', COLS.last, '마지막')],
+  })
+}
+
+function tableRow(Box: any, Text: any, a: A, now: number) {
+  const mark = isLive(a.status) ? '●' : a.status === 'completed' ? '✓' : a.status === 'failed' ? '✗' : '·'
+  const color = COLOR[a.status]
+  const time = fmtTime(Math.max(0, Math.round(((a.endedAt ?? now) - a.startedAt) / 1000)))
+  const dim = (key: string, width: number, text: string) => Box({ key, width, flexShrink: 0, children: [Text({ dimColor: true, wrap: 'truncate-end', children: text })] })
+  return Box({
+    key: a.id,
+    gap: 1,
+    children: [
+      Box({ key: 'n', flexGrow: 1, flexShrink: 1, children: [Text({ wrap: 'truncate-end', children: [Text({ key: 'm', color, bold: true, children: `${mark} ` }), Text({ key: 'v', color: a.status === 'failed' ? 'error' : undefined, weight: 'medium', children: a.name })] })] }),
+      dim('t', COLS.type, a.type || '-'),
+      Box({ key: 's', width: COLS.status, flexShrink: 0, children: [Text({ color, bold: true, children: LABEL[a.status] ?? a.status })] }),
+      dim('m', COLS.time, time),
+      dim('c', COLS.calls, `${a.calls}회`),
+      dim('l', COLS.last, a.lastTool),
+    ],
   })
 }
 
@@ -413,14 +453,15 @@ function row(Box: any, Text: any, Svg: any, a: A, now: number, animate: boolean)
         justifyContent: 'space-between',
         gap: 1,
         children: [
-          Box({ key: 'l', flexShrink: 1, children: [Text({ wrap: 'truncate-end', children: [Text({ key: 'm', color, children: `${face} ` }), Text({ key: 'n', children: a.name })] })] }),
+          // 실패한 에이전트는 이름도 오류 색으로, 그 밖에는 보통 색(끝났어도 흐리게 하지 않는다).
+          Box({ key: 'l', flexShrink: 1, children: [Text({ wrap: 'truncate-end', children: [Text({ key: 'm', color, bold: true, children: `${face} ` }), Text({ key: 'n', color: a.status === 'failed' ? 'error' : undefined, weight: 'medium', children: a.name })] })] }),
           Box({ key: 'r', flexShrink: 0, children: [Text({ dimColor: true, children: time })] }),
         ],
       }),
       Text({
         key: 'sub',
         wrap: 'truncate-end',
-        children: [Text({ key: 's', color, children: `  ${LABEL[a.status] ?? a.status}` }), Text({ key: 'd', dimColor: true, children: ` · ${a.type || '-'} · ${a.calls}회 ${a.lastTool}` })],
+        children: [Text({ key: 's', color, bold: true, children: `  ${LABEL[a.status] ?? a.status}` }), Text({ key: 'd', dimColor: true, children: ` · ${a.type || '-'} · 호출 ${a.calls}회 · ${a.lastTool}` })],
       }),
     ],
   })

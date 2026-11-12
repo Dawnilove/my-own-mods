@@ -42,6 +42,7 @@ let history: number[] = []
 let ticker: { cancel: () => void } | null = null
 let lastUsageAt = 0
 let limitKinds: string[] = [] // 진단용: 엔진이 알려 준 한도 창의 종류
+let showDetail = false // "상세 ▾" 펼침 상태
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
@@ -116,24 +117,49 @@ export const register: Register = on => {
     // 입력창 위 띠는 한 자리라서, 아래 플러그인(예: ponytail)의 띠를 먼저 받아 위에 함께 그린다.
     const beneath: any = await next(e)
     const cols: number = props.bodyColumns ?? 80
-    const { Box, Text } = $.ui.resolve(e) as any
+    const { Box, Text, Button } = $.ui.resolve(e) as any
     // 데스크톱 화면에서는 ponytail 의 버튼이 안쪽 여백을 두껍게 그려서 그 줄이 오른쪽으로 밀린다. 같은 만큼 들여쓴다.
     const indent = (e as any).surface === 'desktop' ? INDENT : 0
-    // 2층 구조: 1층은 ponytail 줄, 2층은 이 줄 하나. 폭이 좁으면 번호가 큰 칸부터 뺀다.
+    // 시안: 칸은 왼쪽부터 일정한 간격으로 놓고, 오른쪽 끝에 "상세 ▾" 버튼 하나. 폭이 좁으면 번호가 큰 칸부터 뺀다.
     const floor = (key: string, list: Seg[]) => {
-      const kept = fit(list, cols - indent)
+      // 오른쪽 끝 버튼 자리(약 9칸)를 빼고 칸을 고른다.
+      const kept = fit(list, cols - indent * 2 - 9)
       const children: any[] = []
       kept.forEach((s, i) => {
         if (i > 0) children.push(Text({ key: `${key}sep${i}`, dimColor: true, children: ' │ ' }))
-        // 이름은 흐리게, 값은 단계 색으로. 칸 안에서는 줄을 바꾸지 않고 끝을 줄인다.
-        const value = Text({ key: 'v', color: LEVEL_COLOR[s.level ?? ''], dimColor: s.level === 'mute', weight: isAlert(s) ? 'bold' : undefined, children: s.value })
+        // 이름은 흐리게, 정상 값도 흐리게. 이상·진행·성공 칸만 색을 낸다. 칸 안에서는 줄을 바꾸지 않고 끝을 줄인다.
+        const calm = s.level === undefined || s.level === 'mute'
+        const value = Text({ key: 'v', color: LEVEL_COLOR[s.level ?? ''], dimColor: calm, weight: isAlert(s) ? 'bold' : undefined, children: s.value })
         const parts = s.label ? [Text({ key: 'l', dimColor: true, children: `${s.label} ` }), value] : [value]
         children.push(Text({ key: `${key}s${i}`, wrap: 'truncate-end', children: parts }))
       })
+      children.push(Box({ key: `${key}fill`, flexGrow: 1 }))
+      children.push(
+        Button({
+          key: `${key}detail`,
+          label: showDetail ? '상세 ▴' : '상세 ▾',
+          plain: true,
+          dimColor: true,
+          onPress: () => {
+            showDetail = !showDetail
+            $.ui.invalidate('ui.render')
+          },
+        }),
+      )
       return Box({ key, children })
     }
     const shown = SHOW_COST ? segs : segs.filter(s => s.prio !== 6)
-    const mine = Box({ key: 'relay', paddingLeft: indent, children: [floor('f1', shown)] })
+    // 상세: 컨텍스트 토큰 수, 한도 리셋, 오늘 권장 계산, 캐시 만료 같은 근거를 한 줄씩.
+    const detail = showDetail
+      ? Box({
+          key: 'detail-rows',
+          flexDirection: 'column',
+          children: detailRows(Date.now()).map(([k, v], i) =>
+            Text({ key: `d${i}`, wrap: 'truncate-end', children: [Text({ key: 'k', dimColor: true, children: `${k}  ` }), Text({ key: 'v', children: v })] }),
+          ),
+        })
+      : null
+    const mine = Box({ key: 'relay', flexDirection: 'column', paddingLeft: indent, paddingRight: indent, children: [floor('f1', shown), detail] })
     return beneath ? Box({ flexDirection: 'column', children: [Box({ key: 'beneath', children: [beneath] }), mine] }) : mine
   })
 }
@@ -251,11 +277,35 @@ function buildSegs(now: number, isWorking: boolean): Seg[] {
     }
   }
 
-  if (context && history.length > 0) {
-    const bars = history.map(p => BARS[Math.min(BARS.length - 1, Math.floor((p / 100) * BARS.length))]).join('')
-    segs.push({ prio: 8, value: `${forecast(context.percent)} ${bars}`, level: 'mute' })
-  }
+  if (context && history.length > 0) segs.push({ prio: 8, value: `${forecast(context.percent)} ${barsOf(history)}`, level: 'mute' })
   return segs
+}
+
+function barsOf(h: number[]): string {
+  return h.map(p => BARS[Math.min(BARS.length - 1, Math.floor((p / 100) * BARS.length))]).join('')
+}
+
+/** "상세 ▾" 를 펼쳤을 때 보이는 근거. 값을 못 읽은 항목은 줄을 만들지 않는다. */
+export function detailRows(now: number): [string, string][] {
+  const rows: [string, string][] = []
+  const when = (ms: number) => {
+    const d = new Date(ms)
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }
+  const comma = (n: number) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  if (context) rows.push(['컨텍스트', `${comma(context.tokens)} / ${comma(context.window)} 토큰`])
+  const reset = week?.resetsAt ? Date.parse(week.resetsAt) : NaN
+  if (Number.isFinite(reset)) rows.push(['주간 한도 리셋', when(reset)])
+  const b = week && dayBase ? dailyBudget(week.percent, dayBase.percent, week.resetsAt, now) : null
+  if (b) {
+    rows.push(['오늘 권장', `${b.recommended.toFixed(0)}%p (쉬는 날 가중치 ${WEIGHT_WEEKEND})`])
+    rows.push(['페이스', `주 경과 대비 ${Math.round(b.pace)}%p`])
+  }
+  if (lastAnswerAt > 0) rows.push(['캐시 만료', `${when(lastAnswerAt + CACHE_MINUTES * 60_000)} (마지막 답변 + ${CACHE_MINUTES}분)`])
+  rows.push(['마지막 검증', verify ? verify.text : '없음'])
+  if (history.length > 0) rows.push(['컨텍스트 추이', barsOf(history)])
+  rows.push(['자식 에이전트', `${children}개 실행 중`])
+  return rows
 }
 
 // 단일 폭 기호(이모지 아님): 글꼴이 달라도 줄이 맞는다.

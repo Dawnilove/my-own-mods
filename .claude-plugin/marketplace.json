@@ -7,21 +7,21 @@
       "name": "edit-guard",
       "source": "./plugins/edit-guard",
       "description": "Mod: 파일을 깨뜨리는 sed/heredoc 치환 명령은 막고, 위험한 삭제·git 명령은 영향 범위를 보여주고 진행/취소를 묻습니다.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "mod"
     },
     {
       "name": "relay-band",
       "source": "./plugins/relay-band",
       "description": "Mod: 입력창 위 한 줄 띠. 검증 결과, 자식 에이전트 수, 컨텍스트, 주간 한도와 오늘 권장량, 캐시 등을 보여줍니다.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "mod"
     },
     {
       "name": "agent-panel",
       "source": "./plugins/agent-panel",
       "description": "Mod: 실행 중인 하위 에이전트를 옆 패널에 보여줍니다.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "mod"
     },
     {

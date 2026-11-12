@@ -74,12 +74,28 @@ test('시작한 에이전트와 도구 호출 수를 한 줄로 그린다', asyn
   expect((await ui.find({ type: 'Text', text: /코드 탐색/ }))?.text).toContain('코드 탐색')
   const sub = await ui.find({ type: 'Text', text: /Explore/ })
   expect(sub?.text).toContain('실행 중')
-  expect(sub?.text).toContain('2회 Read')
+  expect(sub?.text).toContain('호출 2회 · Read')
   // 묶음 머리글과 합계 줄
-  expect((await ui.find({ type: 'Text', text: /^실행 중 1$/ }))?.text).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /합계 1 · 실행 중 1/ }))?.text).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^실행 중 · 1$/ }))?.text).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^합계 1개 · 호출 2회$/ }))?.text).toBeDefined()
   // 데스크톱은 도트 고양이(Svg)를 그린다
   expect(await ui.find({ type: 'Svg' })).toBeTruthy()
+  await ui.unmount()
+})
+
+test('넓은 패널은 두 줄 대신 표로 그린다', async ($, on) => {
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('command.register', () => ({ value: { command: 'agent_panel' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('clock.now', () => ({ value: Date.now() }))
+  on('clock.every', () => ({ value: { cancel: () => {} } }) as any)
+  on('agent.spawn', () => ({ agentId: 'a1', model: 'x' }) as any)
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.agent.spawn({ tool_use_id: 't1', prompt: 'p', description: '코드 탐색', subagentType: 'Explore' } as any)
+
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 120 } } as any)
+  for (const head of ['이름', '유형', '상태', '시간', '호출', '마지막']) expect((await ui.find({ type: 'Text', text: new RegExp(`^${head}$`) }))?.text).toBe(head)
+  expect((await ui.find({ type: 'Text', text: /^합계 1개/ }))?.text).toBeDefined()
   await ui.unmount()
 })
 

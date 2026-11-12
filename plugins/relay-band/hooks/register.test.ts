@@ -1,6 +1,14 @@
 import { expect, test } from 'claude-code/testing'
 
-import { dailyBudget, fit } from './register'
+import { dailyBudget, detailRows, fit } from './register'
+
+test('상세를 펼치면 값을 못 읽은 항목은 줄을 만들지 않는다', () => {
+  const rows = detailRows(Date.now())
+  const keys = rows.map(r => r[0])
+  expect(keys).toContain('마지막 검증')
+  expect(keys).toContain('자식 에이전트')
+  expect(keys).not.toContain('주간 한도 리셋') // 한도 값을 아직 못 읽었다
+})
 
 const DAY = 86_400_000
 
@@ -66,5 +74,7 @@ test('띠는 컨텍스트 값을 그린다', async ($, on) => {
   } as any)
   expect((await ui.find({ type: 'Text', text: /자식 0/ }))?.text).toBe('자식 0')
   expect((await ui.find({ type: 'Text', text: /ponytail 띠/ }))?.text).toBe('ponytail 띠')
+  // 시안: 줄 오른쪽 끝에 상세 버튼 하나
+  expect(await ui.find({ type: 'Button' })).toBeTruthy()
   await ui.unmount()
 })
