@@ -28,7 +28,7 @@
       "name": "session-board",
       "source": "./plugins/session-board",
       "description": "Mod: 여러 세션의 상태를 오른쪽 패널에 모아 보여줍니다. 진행 중 / 응답 대기 / 완료, 세션별 진척도 뱃지.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "mod"
     },
     {

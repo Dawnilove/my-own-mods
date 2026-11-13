@@ -2,6 +2,7 @@
 // 모드는 세션마다 따로 돌고 다른 세션 목록을 주는 API 가 없다. 그래서 세션마다 자기 상태를 파일 하나에 쓰고,
 // 패널이 그 폴더를 읽어 모은다. 세션 하나가 파일 하나만 쓰므로 쓰기가 겹치지 않는다.
 // 왼쪽 사이드바 항목에는 모드가 그릴 수 없다. 뱃지는 패널 안 카드에 단다.
+// 세션을 열면 패널이 같이 열린다(넓은 창에서만 그려진다). "접기" 버튼은 패널을 좁은 너비로 다시 열고 개수 알약만 그린다.
 // 호스트가 소스에서 on(...) 과 $.noun.method(...) 를 읽으므로 literal 로 쓰고, $ 를 받는 도우미는 최상위 함수로 둔다.
 
 import type { Register } from 'claude-code'
@@ -94,9 +95,33 @@ const waitLabel = (tool: string) => (tool === 'AskUserQuestion' ? '답변' : too
 let me: Rec | null = null
 let dir = ''
 let board: Rec[] = []
-let isOpen = false
+let isOpen = false // 패널을 열어 두려는 중(사용자가 닫으면 false)
+let isPlaced = false // 지금 화면에 그려지는 중(좁은 창에서는 열어 두려 해도 아직 못 그린다)
+let folded = false // 옆으로 접은 상태: 좁은 너비로 다시 열고 요약 알약만 그린다
 let ticker: { cancel: () => void } | null = null
 let tick = 0
+const FOLD_COLUMNS = 16 // 접었을 때 바라는 너비. 호스트가 지킬지는 앱에서 확인해야 한다
+
+/** 패널을 연다. 접힌 상태면 좁은 너비를 바란다. 사용자가 시킨 열기가 아니면 넓은 창(144칸 이상)에서만 그려진다. */
+async function openPane($: any) {
+  const opened = await $.ui.open({ id: PANE_ID, title: '세션', ...(folded ? { columns: FOLD_COLUMNS } : {}) })
+  isOpen = true
+  isPlaced = opened.isPlaced
+  if (isPlaced) await refresh($)
+  return opened
+}
+
+/** 접기/펼치기: 패널을 닫고 바뀐 너비로 다시 연다. 고른 상태는 다음 세션에도 이어진다. */
+async function setFolded($: any, value: boolean) {
+  folded = value
+  try {
+    await $.store.set('folded', value)
+  } catch {
+    // 저장하지 못해도 이번 세션에서는 바뀐다
+  }
+  await $.ui.close({ id: PANE_ID })
+  await openPane($)
+}
 
 /** 내 기록을 고쳐 파일에 쓴다. 어떤 오류도 던지지 않는다: tool.call 을 쥔 훅이 이 함수 때문에 도구를 막으면 안 된다. */
 async function save($: any, patch: Partial<Rec> = {}) {
@@ -166,19 +191,24 @@ export const register: Register = on => {
     await save($)
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => onTick($))
+    // 세션을 열면 패널도 같이 연다. 사용자가 닫으면 이번 세션에서는 다시 열지 않는다.
+    if (e.isInteractive) {
+      folded = (await $.store.get('folded')) === true
+      await openPane($)
+    }
     return result
   })
 
   on('command.run', { command: 'session_board' }, async $ => {
-    if (isOpen) {
+    // 열어 두려 했지만 아직 못 그리는 중이면, 닫지 않고 사용자가 시킨 열기로 다시 연다
+    if (isOpen && isPlaced) {
       await $.ui.close({ id: PANE_ID })
       isOpen = false
+      isPlaced = false
       return { text: '세션 상태판을 닫았습니다.' }
     }
-    const opened = await $.ui.open({ id: PANE_ID, title: '세션' })
-    isOpen = opened.isPlaced
-    if (isOpen) await refresh($)
-    return { text: isOpen ? '세션 상태판을 열었습니다.' : '이 화면에는 패널을 놓을 자리가 없습니다.' }
+    const opened = await openPane($)
+    return { text: opened.isPlaced ? '세션 상태판을 열었습니다.' : '이 화면에는 패널을 놓을 자리가 없습니다.' }
   })
 
   on('turn.start', async ($, e, next) => {
@@ -226,19 +256,28 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, ($, e, next) => {
-    const { Box, Text, Svg } = $.ui.resolve(e) as any
+    const { Box, Text, Svg, Button } = $.ui.resolve(e) as any
     const now = Date.now()
     const shown = board.map(r => ({ r, g: groupOf(r, now) })).filter(x => x.g !== 'hidden')
+    const fold = Box({ key: 'fold', children: [Button({ key: 'fold-btn', label: folded ? '◂ 펼치기' : '접기 ▸', variant: 'secondary', onPress: () => setFolded($, !folded) })] })
+    if (folded) {
+      // 접은 상태: 묶음마다 알약 하나(개수만). 응답 대기가 있으면 호박색 알약이 눈에 띈다.
+      const pills = GROUPS.map(g => ({ g, n: shown.filter(x => x.g === g.key).length }))
+        .filter(x => x.n > 0)
+        .map(x => Box({ key: x.g.key, children: [Text({ bold: true, color: x.g.fg, backgroundColor: x.g.bg, children: ` ${x.g.short} ${x.n} ` })] }))
+      return Box({ flexDirection: 'column', gap: 1, children: [fold, ...(pills.length > 0 ? pills : [Text({ key: 'none', dimColor: true, children: '세션 없음' })])] })
+    }
     if (shown.length === 0) {
       return Box({
         flexDirection: 'column',
         children: [
+          fold,
           Text({ key: 'empty', dimColor: true, children: '표시할 세션이 없습니다.' }),
           Text({ key: 'hint', dimColor: true, children: '다른 세션에도 이 모드가 켜져 있어야 보입니다. 닫으려면 /session_board 를 입력하세요.' }),
         ],
       })
     }
-    const body: any[] = []
+    const body: any[] = [fold]
     for (const g of GROUPS) {
       const rows = shown
         .filter(x => x.g === g.key)
@@ -251,7 +290,7 @@ export const register: Register = on => {
           key: `g-${g.key}`,
           flexDirection: 'column',
           gap: 1,
-          marginTop: body.length > 0 ? 1 : 0,
+          marginTop: 1,
           children: [Box({ key: 'h', children: [Text({ bold: true, color: g.fg, backgroundColor: g.bg, children: ` ${g.title} · ${rows.length} ` })] }), ...rows.map(r => card(Box, Text, Svg, r, g.key, now))],
         }),
       )
@@ -262,9 +301,9 @@ export const register: Register = on => {
 }
 
 const GROUPS = [
-  { key: 'running', title: '진행 중', bg: C.indigo, fg: C.white },
-  { key: 'waiting', title: '응답 대기', bg: C.amber, fg: C.ink },
-  { key: 'idle', title: '완료·유휴', bg: C.soft, fg: C.dim },
+  { key: 'running', title: '진행 중', short: '진행', bg: C.indigo, fg: C.white },
+  { key: 'waiting', title: '응답 대기', short: '대기', bg: C.amber, fg: C.ink },
+  { key: 'idle', title: '완료·유휴', short: '유휴', bg: C.soft, fg: C.dim },
 ] as const
 
 // 흰 카드 하나. 이름 / 뱃지 줄 / 진척 막대 / 지금 하는 단계.

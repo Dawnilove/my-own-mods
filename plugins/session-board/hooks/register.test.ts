@@ -57,6 +57,8 @@ test('승인 대화상자와 질문은 대기로 기록하고, 풀리면 진행 
   on('clock.now', () => ({ value: Date.now() }))
   on('clock.every', () => ({ value: {} }) as any)
   on('command.register', () => ({ value: { command: 'session_board' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('store.get', () => ({ value: undefined }))
   on('fs.list', () => ({ value: [] }) as any)
   on('fs.write', (_, e: any) => {
     const r = JSON.parse(e.text)
@@ -88,6 +90,7 @@ test('내 상태를 파일에 쓰고, 패널은 다른 세션 기록과 함께 �
   on('clock.every', () => ({ value: {} }) as any)
   on('command.register', () => ({ value: { command: 'session_board' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('store.get', () => ({ value: undefined }))
   on('fs.write', (_, e: any) => {
     writes.push({ path: e.path, text: e.text })
     return { value: undefined } as any
@@ -106,11 +109,64 @@ test('내 상태를 파일에 쓰고, 패널은 다른 세션 기록과 함께 �
   const saved = JSON.parse(writes.at(-1)!.text)
   expect([saved.done, saved.total, saved.step]).toEqual([1, 3, 'b 하는 중'])
 
-  await $.command.run({ command: 'session_board', args: '' } as any)
+  // 세션을 열 때 패널이 같이 열렸으니 따로 명령을 칠 필요가 없다
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'session-board', component: 'Pane', requestId: 'session-board', props: { title: '세션', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} }, surface } as any)
     const found = await Promise.all([/다른 프로젝트/, /2\/5 단계/, /1\/3 단계/, /지금: 시험 실행/].map(async text => (await ui.find({ type: 'Text', text }))?.text !== undefined))
     expect([surface, ...found]).toEqual([surface, true, true, true, true])
     await ui.unmount()
   }
+})
+
+test('세션을 열면 패널이 같이 열리고, 접기를 누르면 좁은 너비로 다시 열어 요약 알약만 그린다', async ($, on) => {
+  const opens: any[] = []
+  let closes = 0
+  const stored: any[] = []
+  const waiting = JSON.stringify(rec({ id: 'w', name: '대기 중', state: 'waiting', waitFor: '답변', since: Date.now(), updatedAt: Date.now() }))
+  on('env.get', () => ({ value: 'C:/home' }))
+  on('session.cwd', () => ({ value: 'C:/work/p' }))
+  on('session.id', () => ({ value: 'me' }))
+  on('clock.now', () => ({ value: Date.now() }))
+  on('clock.every', () => ({ value: {} }) as any)
+  on('command.register', () => ({ value: { command: 'session_board' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('store.set', (_, e: any) => {
+    stored.push(e.value)
+    return { value: undefined } as any
+  })
+  on('ui.open', (_, e: any) => {
+    opens.push(e)
+    return { value: { isPlaced: true } }
+  })
+  on('ui.close', () => {
+    closes += 1
+    return { value: undefined } as any
+  })
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.list', () => ({ value: [{ name: 'w.json', kind: 'file', size: 1, mtimeMs: Date.now(), isLink: false }] }) as any)
+  on('fs.read', () => ({ value: waiting }) as any)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(opens.length).toBe(1)
+  expect(opens[0].columns).toBeUndefined() // 펼친 상태는 호스트 기본 너비
+
+  const props = { title: '세션', isFocused: false, bodyColumns: 60, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} }
+  const ui = await $.ui.mount({ plugin: 'session-board', component: 'Pane', requestId: 'session-board', props, surface: 'desktop' } as any)
+  expect((await ui.find({ type: 'Text', text: /응답 대기 · 1/ }))?.text).toBeDefined()
+
+  await ui.press({ key: 'fold-btn' })
+  expect(closes).toBe(1)
+  expect(opens.length).toBe(2)
+  expect(opens[1].columns).toBe(16)
+  expect(stored).toEqual([true])
+  // 접으면 묶음 카드 대신 개수 알약만 남는다
+  expect((await ui.find({ type: 'Text', text: /대기 1/ }))?.text).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /대기 중/ })).toBeUndefined()
+
+  // 펼치기: 다시 기본 너비
+  await ui.press({ key: 'fold-btn' })
+  expect(opens[2].columns).toBeUndefined()
+  expect(stored).toEqual([true, false])
+  await ui.unmount()
 })
