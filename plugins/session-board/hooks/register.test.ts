@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { badges, barSvg, fmtDur, groupOf, parseRec, type Rec } from './register'
+import { applyPlan, badges, barSvg, fmtDur, groupOf, parseRec, progress, type Rec } from './register'
 
 const NOW = 1_000_000_000_000
 const rec = (p: Partial<Rec> = {}): Rec => ({ id: 's1', name: '프로젝트', state: 'idle', since: NOW, turnStartedAt: null, waitFor: null, done: 0, total: 0, step: '', updatedAt: NOW, ...p })
@@ -41,6 +41,46 @@ test('뱃지는 진척도, 경과 시간, 대기 사유를 담는다', () => {
 
   // 작업 목록이 없으면 경과 시간이 주 뱃지
   expect(badges(rec({ state: 'running', turnStartedAt: NOW - 3_000 }), NOW).map(b => b.text)).toEqual(['경과 3초'])
+})
+
+test('앱의 작업 목록(update_plan)은 통째 교체와 한 단계씩 고침을 모두 따라간다', () => {
+  const items = [{ content: 'a', status: 'in_progress' }, { content: 'b', status: 'pending' }, { content: 'c', status: 'pending' }]
+  let plan = applyPlan([], { items })
+  expect(progress(plan)).toEqual({ total: 3, done: 0, step: 'a' })
+  plan = applyPlan(plan, { advance: true }) // a 끝, b 시작
+  expect(progress(plan)).toEqual({ total: 3, done: 1, step: 'b' })
+  plan = applyPlan(plan, { done: [2], start: 3 }) // 번호는 1부터
+  expect(progress(plan)).toEqual({ total: 3, done: 2, step: 'c' })
+  plan = applyPlan(plan, { advance: true })
+  expect(progress(plan)).toEqual({ total: 3, done: 3, step: '' })
+  // 목록이 없을 때 오는 고침 호출과 범위를 벗어난 번호는 무시한다
+  expect(applyPlan([], { advance: true, done: [9], start: 0 })).toEqual([])
+  expect(items[0].status).toBe('in_progress') // 받은 목록을 바꾸지 않는다
+})
+
+test('앱 작업 목록 호출이 오면 기록의 done/total/step 이 바뀐다', async ($, on) => {
+  const writes: any[] = []
+  on('env.get', () => ({ value: 'C:/home' }))
+  on('session.cwd', () => ({ value: 'C:/work/p' }))
+  on('session.id', () => ({ value: 'me' }))
+  on('clock.now', () => ({ value: Date.now() }))
+  on('clock.every', () => ({ value: {} }) as any)
+  on('command.register', () => ({ value: { command: 'session_board' } }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('store.get', () => ({ value: undefined }))
+  on('fs.list', () => ({ value: [] }) as any)
+  on('fs.write', (_, e: any) => {
+    writes.push(JSON.parse(e.text))
+    return { value: undefined } as any
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('tool.call', () => ({ result: {} }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', items: [{ content: '조사', status: 'in_progress' }, { content: '구현', status: 'pending' }] } as any)
+  expect(writes.at(-1)).toMatchObject({ done: 0, total: 2, step: '조사' })
+  await $.tool.call({ tool: 'mcp__ccd_turn__update_plan', advance: true } as any)
+  expect(writes.at(-1)).toMatchObject({ done: 1, total: 2, step: '구현' })
 })
 
 test('진척 막대는 채움 길이가 단계 비율과 같고 한도를 넘지 않는다', () => {

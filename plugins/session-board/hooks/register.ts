@@ -88,6 +88,29 @@ export function barSvg(done: number, total: number, color: string, w = 160): str
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} 6"><rect width="${w}" height="6" rx="3" fill="${C.line}"/>${fill > 0 ? `<rect width="${fill}" height="6" rx="3" fill="${color}"/>` : ''}</svg>`
 }
 
+export type PlanItem = { content: string; status: string }
+
+/** 데스크톱 앱 작업 목록 도구(update_plan)의 호출 하나를 목록에 적용한다. items 는 통째로 바꾸고, advance/done/start 는 한 단계씩 고친다(번호는 1부터). */
+export function applyPlan(plan: PlanItem[], a: any): PlanItem[] {
+  const next: PlanItem[] = Array.isArray(a?.items)
+    ? a.items.map((i: any) => ({ content: String(i?.content ?? ''), status: String(i?.status ?? 'pending') }))
+    : plan.map(i => ({ ...i }))
+  if (a?.advance === true) {
+    const cur = next.findIndex(i => i.status === 'in_progress')
+    if (cur >= 0) next[cur].status = 'completed'
+    const nxt = next.findIndex(i => i.status === 'pending')
+    if (nxt >= 0) next[nxt].status = 'in_progress'
+  }
+  for (const n of Array.isArray(a?.done) ? a.done : []) if (next[n - 1]) next[n - 1].status = 'completed'
+  if (Number.isInteger(a?.start) && next[a.start - 1]) next[a.start - 1].status = 'in_progress'
+  return next
+}
+
+/** 목록에서 기록에 쓸 진척(전체·완료·지금 단계)을 뽑는다. */
+export const progress = (plan: PlanItem[]) => ({ total: plan.length, done: plan.filter(i => i.status === 'completed').length, step: plan.find(i => i.status === 'in_progress')?.content ?? '' })
+
+const PLAN_TOOL = 'mcp__ccd_turn__update_plan'
+let plan: PlanItem[] = [] // 이 세션의 작업 목록. 한 단계씩 고치는 호출을 받으려고 기억해 둔다
 const waitLabel = (tool: string) => (tool === 'AskUserQuestion' ? '답변' : tool === 'ExitPlanMode' ? '계획 승인' : `${tool} 승인`)
 
 // ---- 세션 하나의 상태 ---------------------------------------------------------
@@ -218,6 +241,7 @@ export const register: Register = on => {
       if (id !== me.id) me = { ...me, id }
       const t = await $.clock.now()
       const finished = me.total > 0 && me.done === me.total
+      if (finished) plan = []
       await save($, { state: 'running', since: t, turnStartedAt: t, waitFor: null, ...(finished ? { done: 0, total: 0, step: '' } : {}) })
     }
     return next(e)
@@ -239,9 +263,14 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e)
     if (e.tool === 'TodoWrite') {
+      // CLI 의 작업 목록: 호출마다 목록 전체가 온다
       const raw = (e as any).todos
-      const todos: { status: string; activeForm?: string }[] = Array.isArray(raw) ? raw : []
-      await save($, { total: todos.length, done: todos.filter(t => t.status === 'completed').length, step: todos.find(t => t.status === 'in_progress')?.activeForm ?? '' })
+      plan = (Array.isArray(raw) ? raw : []).map((t: any) => ({ content: String(t?.activeForm || t?.content || ''), status: String(t?.status ?? 'pending') }))
+      await save($, progress(plan))
+    } else if (e.tool === PLAN_TOOL) {
+      // 데스크톱 앱의 작업 목록: 목록 전체이거나 한 단계씩 고친 것
+      plan = applyPlan(plan, e)
+      if (plan.length > 0) await save($, progress(plan))
     }
     if (e.tool === 'AskUserQuestion' || e.tool === 'ExitPlanMode') await go($, 'waiting', waitLabel(e.tool))
     const result = await next(e)
