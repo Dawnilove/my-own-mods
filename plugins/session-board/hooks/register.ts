@@ -119,7 +119,6 @@ let me: Rec | null = null
 let dir = ''
 let board: Rec[] = []
 let isOpen = false // 패널을 열어 두려는 중(사용자가 닫으면 false)
-let isPlaced = false // 지금 화면에 그려지는 중(좁은 창에서는 열어 두려 해도 아직 못 그린다)
 let folded = false // 옆으로 접은 상태: 좁은 너비로 다시 열고 요약 알약만 그린다
 let ticker: { cancel: () => void } | null = null
 let tick = 0
@@ -129,8 +128,7 @@ const FOLD_COLUMNS = 16 // 접었을 때 바라는 너비. 호스트가 지킬�
 async function openPane($: any) {
   const opened = await $.ui.open({ id: PANE_ID, title: '세션', ...(folded ? { columns: FOLD_COLUMNS } : {}) })
   isOpen = true
-  isPlaced = opened.isPlaced
-  if (isPlaced) await refresh($)
+  await refresh($)
   return opened
 }
 
@@ -215,19 +213,17 @@ export const register: Register = on => {
     ticker?.cancel()
     ticker = $.clock.every(TICK_MS, () => onTick($))
     // 세션을 열면 패널도 같이 연다. 사용자가 닫으면 이번 세션에서는 다시 열지 않는다.
-    if (e.isInteractive) {
-      folded = (await $.store.get('folded')) === true
-      await openPane($)
-    }
+    // 데스크톱 앱 세션은 SDK 로 실행돼 isInteractive 가 false 이고 화면도 늦게 붙는다. 그래도 열기를 요청해 두면 화면이 붙을 때 그려진다.
+    folded = (await $.store.get('folded')) === true
+    await openPane($)
     return result
   })
 
   on('command.run', { command: 'session_board' }, async $ => {
-    // 열어 두려 했지만 아직 못 그리는 중이면, 닫지 않고 사용자가 시킨 열기로 다시 연다
-    if (isOpen && isPlaced) {
+    // 그려지고 있으면 닫는다. 열어 두려 했지만 아직 못 그리는 중이면(좁은 창), 사용자가 시킨 열기로 다시 연다
+    if ((await $.ui.panes()).some(p => p.id === PANE_ID && p.isPlaced)) {
       await $.ui.close({ id: PANE_ID })
       isOpen = false
-      isPlaced = false
       return { text: '세션 상태판을 닫았습니다.' }
     }
     const opened = await openPane($)

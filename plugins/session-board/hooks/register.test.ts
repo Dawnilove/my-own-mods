@@ -158,6 +158,44 @@ test('내 상태를 파일에 쓰고, 패널은 다른 세션 기록과 함께 �
   }
 })
 
+test('앱(SDK) 세션처럼 isInteractive 가 false 여도 패널을 열고, 명령은 그려지는 패널만 닫는다', async ($, on) => {
+  let opens = 0
+  let closes = 0
+  let panes: any[] = []
+  on('env.get', () => ({ value: 'C:/home' }))
+  on('session.cwd', () => ({ value: 'C:/work/p' }))
+  on('session.id', () => ({ value: 'me' }))
+  on('clock.now', () => ({ value: Date.now() }))
+  on('clock.every', () => ({ value: {} }) as any)
+  on('command.register', () => ({ value: { command: 'session_board' } }))
+  on('store.get', () => ({ value: undefined }))
+  on('fs.write', () => ({ value: undefined }) as any)
+  on('fs.list', () => ({ value: [] }) as any)
+  on('ui.open', () => {
+    opens += 1
+    return { value: { isPlaced: false } } // 화면이 아직 안 붙었거나 창이 좁다
+  })
+  on('ui.close', () => {
+    closes += 1
+    return { value: undefined } as any
+  })
+  on('ui.panes', () => ({ value: panes }) as any)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: null, isInteractive: false } as any)
+  expect(opens).toBe(1)
+
+  // 아직 못 그리는 패널이면 닫지 않고 사용자가 시킨 열기로 다시 연다
+  panes = [{ id: 'session-board', isPlaced: false }]
+  await $.command.run({ command: 'session_board', args: '' } as any)
+  expect([opens, closes]).toEqual([2, 0])
+
+  // 그려지고 있으면 닫는다
+  panes = [{ id: 'session-board', isPlaced: true }]
+  await $.command.run({ command: 'session_board', args: '' } as any)
+  expect([opens, closes]).toEqual([2, 1])
+})
+
 test('세션을 열면 패널이 같이 열리고, 접기를 누르면 좁은 너비로 다시 열어 요약 알약만 그린다', async ($, on) => {
   const opens: any[] = []
   let closes = 0
