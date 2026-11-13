@@ -25,6 +25,13 @@
       "category": "mod"
     },
     {
+      "name": "session-board",
+      "source": "./plugins/session-board",
+      "description": "Mod: 여러 세션의 상태를 오른쪽 패널에 모아 보여줍니다. 진행 중 / 응답 대기 / 완료, 세션별 진척도 뱃지.",
+      "version": "0.1.0",
+      "category": "mod"
+    },
+    {
       "name": "relay-skills",
       "source": "./plugins/relay-skills",
       "description": "Skills: /handoff(증거 기반 인계 요약), /confirm-first(큰 작업 전 해석 재확인).",
